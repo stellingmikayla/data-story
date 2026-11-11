@@ -1,0 +1,113 @@
+---
+title: "Week 8 Practice - Exploratory Data Analysis"
+author: "Mikayla Stelling"
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+library(tidyverse)
+library(haven)
+```
+
+```{r}
+dir.create("data", showWarnings = FALSE)
+url <- "https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public/2017/DataFiles/"
+
+if (!file.exists("data/DEMO_J.xpt")) download.file(paste0(url, "DEMO_J.xpt"), "data/DEMO_J.xpt", mode = "wb")
+if (!file.exists("data/DPQ_J.xpt"))  download.file(paste0(url, "DPQ_J.xpt"),  "data/DPQ_J.xpt",  mode = "wb")
+if (!file.exists("data/PAQ_J.xpt"))  download.file(paste0(url, "PAQ_J.xpt"),  "data/PAQ_J.xpt",  mode = "wb")
+
+demo <- read_xpt("data/DEMO_J.xpt")   # demographics
+dpq  <- read_xpt("data/DPQ_J.xpt")    # depression (PHQ-9)
+paq  <- read_xpt("data/PAQ_J.xpt")    # physical activity
+```
+
+```{r}
+items <- c("DPQ010", "DPQ020", "DPQ030", "DPQ040", "DPQ050",
+           "DPQ060", "DPQ070", "DPQ080", "DPQ090")
+
+dpq[items][dpq[items] > 3] <- NA          # 7 and 9 become NA
+dpq$phq9 <- rowSums(dpq[items])           # total score (NA if any question is missing)
+
+dpq <- select(dpq, SEQN, phq9)
+```
+
+```{r}
+paq <- paq |>
+  mutate(
+    # days must be 1-7, minutes over 7000 are "don't know" codes
+    across(c(PAQ610, PAQ625, PAQ640, PAQ655, PAQ670), ~ ifelse(.x > 7, NA, .x)),
+    across(c(PAD615, PAD630, PAD645, PAD660, PAD675), ~ ifelse(.x > 7000, NA, .x)),
+    
+    # weekly minutes = days x minutes per day (0 if they said "no")
+    vig_work  = case_when(PAQ605 == 2 ~ 0, PAQ605 == 1 ~ PAQ610 * PAD615),
+    mod_work  = case_when(PAQ620 == 2 ~ 0, PAQ620 == 1 ~ PAQ625 * PAD630),
+    walk_bike = case_when(PAQ635 == 2 ~ 0, PAQ635 == 1 ~ PAQ640 * PAD645),
+    vig_rec   = case_when(PAQ650 == 2 ~ 0, PAQ650 == 1 ~ PAQ655 * PAD660),
+    mod_rec   = case_when(PAQ665 == 2 ~ 0, PAQ665 == 1 ~ PAQ670 * PAD675),
+    
+    mvpa_min = vig_work + mod_work + walk_bike + vig_rec + mod_rec
+  ) |>
+  select(SEQN, vig_work, mod_work, walk_bike, vig_rec, mod_rec, mvpa_min)
+```
+
+```{r}
+demo <- demo |>
+  select(SEQN, age = RIDAGEYR, sex = RIAGENDR, income = INDFMPIR,
+         weight = WTMEC2YR, psu = SDMVPSU, strata = SDMVSTRA) |>
+  mutate(sex = ifelse(sex == 1, "Male", "Female"))
+
+nhanes <- demo |>
+  filter(age >= 18) |>
+  left_join(dpq, by = "SEQN") |>
+  left_join(paq, by = "SEQN") |>
+  mutate(group = case_when(mvpa_min == 0   ~ "None",
+                           mvpa_min <= 100 ~ "1-100",
+                           mvpa_min < 150  ~ "101-149",
+                           mvpa_min >= 150 ~ "150+"),
+         group = factor(group, levels = c("None", "1-100", "101-149", "150+")))
+```
+
+Now to peek at the data
+
+```{r}
+glimpse(nhanes)
+head(nhanes)
+tail(nhanes)
+slice(nhanes, 100:110)
+summary(nhanes)
+```
+
+Check that phq9 runs from 0 to 27 and the NA counts.
+
+```{r}
+nhanes |> arrange(desc(mvpa_min)) |> head(10)        
+nhanes <- filter(nhanes, is.na(mvpa_min) | mvpa_min <= 6720)   #determine max minutes per week
+```
+
+Distributions
+
+PHQ-9 histogram
+
+```{r}
+#| warning: false
+ggplot(nhanes, aes(x = phq9)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  labs(x = "PHQ-9 score", y = "Count")
+
+mean(nhanes$phq9 == 0,  na.rm = TRUE)
+mean(nhanes$phq9 >= 10, na.rm = TRUE)
+```
+
+MVPA histogram
+
+```{r}
+mean(nhanes$mvpa_min == 0, na.rm = TRUE)   # proportion doing no MVPA
+
+ggplot(filter(nhanes, mvpa_min > 0), aes(x = mvpa_min)) +
+  geom_histogram(bins = 40, fill = "turquoise", color = "white") +
+  scale_x_log10() +
+  labs(x = "Weekly MVPA minutes (log scale)", y = "Count")
+```
